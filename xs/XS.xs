@@ -63,6 +63,7 @@
 typedef struct _stackette {
   void *ptr;
   struct _stackette *prev;
+  struct _stackette *next;
 } stackette;
 
 #define EMPTY_STACK 0
@@ -137,6 +138,7 @@ static void get_regex_flags(char * flags, SV *sv);
 static int64_t math_bigint_to_int64(SV *sv, const char *key);
 static SV* int64_as_SV(int64_t value);
 static stackette * check_circular_ref(void *ptr, stackette *stack);
+static void release_circular_refs(stackette *stack);
 static SV* bson_parent_type(SV *sv);
 
 /* BSON decoding
@@ -550,7 +552,7 @@ hv_to_bson(bson_t * bson, SV *sv, HV *opts, stackette *stack, int depth, bool su
 
   /* free the hv elem */
   if ( ! subdoc ) {
-    Safefree(stack);
+    release_circular_refs(stack);
   }
   depth--;
 }
@@ -612,7 +614,7 @@ ixhash_to_bson(bson_t * bson, SV *sv, HV *opts, stackette *stack, int depth, boo
 
   /* free the ixhash elem */
   if ( ! subdoc ) {
-    Safefree(stack);
+    release_circular_refs(stack);
   }
   depth--;
 }
@@ -664,7 +666,7 @@ iter_src_to_bson(bson_t * bson, SV *sv, HV *opts, stackette *stack, int depth, b
 
   /* free the stack elem for sv */
   if ( ! subdoc ) {
-    Safefree(stack);
+    release_circular_refs(stack);
   }
   depth--;
 }
@@ -693,6 +695,13 @@ av_to_bson (bson_t * bson, AV *av, HV *opts, stackette *stack, int depth) {
   }
 
   /* free the av elem */
+  if (stack->prev) {
+    stack->prev->next = stack->next;
+  }
+  if (stack->next) {
+    stack->next->prev = stack->prev;
+  }
+
   Safefree(stack);
   depth--;
 }
@@ -1396,8 +1405,31 @@ check_circular_ref(void *ptr, stackette *stack) {
   ette->ptr = ptr;
   /* if stack has not been initialized, stack will be 0 so this will work out */
   ette->prev = start;
+  ette->next = NULL;
+
+  /* if previous stackette exists, set current stackette as its next */
+  if (start) {
+      start->next = ette;
+  }
 
   return ette;
+}
+
+static void
+release_circular_refs(stackette *stack) {
+  stackette *bottom = stack;
+
+  if (bottom->prev) {
+    bottom->prev->next = NULL;
+  }
+
+  /* destroy all above bottom */
+  while (bottom->next) {
+    stackette *to_free = bottom;
+    bottom = bottom->next;
+    Safefree(to_free);
+  }
+  Safefree(bottom);
 }
 
 /**
